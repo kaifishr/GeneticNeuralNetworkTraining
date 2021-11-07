@@ -1,50 +1,36 @@
 from models.model import NeuralNetwork
-from datetime import datetime
 
 
 def main():
-    problem_type = 'classification'
-    problem = 'spirals' 
-    n_points = 10000
-    noise_level = 0.5
-    activation_fct = 'tanh'
-    n_outputs = 2
-    n_inputs = 2
+    config = dict()
 
-    #problem_type = 'regression'
-    #problem = 'oscillation' 
-    #n_points = 1000
-    #noise_level = 0.1
-    #activation_fct = 'relu'
-    #n_outputs = 1
-    #n_inputs = 1
+    # Task
+    config["task"] = "classification"  # classification, regression
 
-    n_epochs = 100000
-    n_agents = 4
-    batch_size = 256 
-    mutation_rate = 0.01
-    mutation_prob = 0.1
-    network_layers = (n_inputs,) + 2*(16,) + (n_outputs,)
-    mutation_type = 'random_cycle' 
-    crossover_type = 'neuron_wise' 
-    save_path = './logs/{}/'.format(datetime.now().strftime("%Y%m%d%H%M%S"))
+    # Data
+    config["problem"] = "moons"  # Regression: oscillation, Classification: moons, circles, checkerboard, rectangles, spirals
+    config["n_points"] = 4000
+    config["noise_level"] = 0.05
 
-    network = NeuralNetwork(problem_type,
-                            n_epochs,
-                            problem,
-                            n_points,
-                            noise_level,
-                            network_layers, 
-                            n_outputs, 
-                            n_agents, 
-                            mutation_rate, 
-                            mutation_prob,
-                            mutation_type,
-                            crossover_type,
-                            batch_size,
-                            activation_fct,
-                            save_path)
+    # Network
+    config["n_dims_input"] = 2
+    config["n_dims_hidden"] = 8
+    config["n_dims_output"] = 2
+    config["n_dims_sampling_dist"] = 128
+    config["n_hidden"] = 2
 
+    # Training
+    config["n_epochs"] = 99999999
+    config["batch_size"] = 256
+    config["n_agents"] = 4
+    config["mutation_rate"] = 1.0e-02
+    config["mutation_prob"] = 1.0e-01
+
+    # Stats
+    config["stats_every_n_epochs"] = 200
+    config["plots_every_n_epochs"] = 5000
+
+    network = NeuralNetwork(config)
     network.run()
 
 

@@ -3,12 +3,12 @@ from sklearn import datasets
 
 np.random.seed(42)
 
-class DataLoader(object):
-    def __init__(self, problem, n_outputs):
-        self.problem = problem
-        self.n_outputs = n_outputs
 
-    def get_data(self, n_points, noise_level, train_to_test_ratio=0.8):
+class DataLoader(object):
+    def __init__(self, problem):
+        self.problem = problem
+
+    def get_data(self, n_points, noise_level):
         if self.problem == 'oscillation':
             x, y = self.make_oscillation(n_points, noise_level=noise_level)
         elif self.problem == 'moons':
@@ -22,26 +22,19 @@ class DataLoader(object):
         elif self.problem == 'spirals':
             x, y = self.make_spirals(n_points, noise_level=noise_level)
         else:
-            raise Exception('Problem not implemented.')
+            raise Exception('Dataset not implemented.')
 
-        # Split into train and test data
-        x_train = x[:int(train_to_test_ratio*n_points)]
-        y_train = y[:int(train_to_test_ratio*n_points)]
-        x_test = x[int(train_to_test_ratio*n_points):]
-        y_test = y[int(train_to_test_ratio*n_points):]
-
-        return x_train, y_train, x_test, y_test
+        return x, y
 
     @staticmethod
-    def norm_data_2d(x, a=-1.0, b=1.0):
-        x[:, 0] = a+(x[:, 0]-x[:, 0].min()) * (b-a) / (x[:, 0].max()-x[:, 0].min())
-        x[:, 1] = a+(x[:, 1]-x[:, 1].min()) * (b-a) / (x[:, 1].max()-x[:, 1].min())
+    def norm_data_2d(x):
+        x[:, 0] = 2.0 * (x[:, 0]-x[:, 0].min()) / (x[:, 0].max()-x[:, 0].min()) - 1.0
+        x[:, 1] = 2.0 * (x[:, 1]-x[:, 1].min()) / (x[:, 1].max()-x[:, 1].min()) - 1.0
         return x
 
     @staticmethod
-    def norm_data_1d(x, a=-1.0, b=1.0):
-        x = a + (x-x.min()) * (b-a) / (x.max() - x.min())
-        return x
+    def norm_data_1d(x):
+        return 2.0 * (x - x.min()) / (x.max() - x.min()) - 1.0
 
     def make_rectangles(self, n_points, noise_level=0.0, overlap_prop=0.5):
         n_half = n_points // 2
@@ -69,7 +62,7 @@ class DataLoader(object):
         x = self.norm_data_2d(x)
         return x, y_one_hot
 
-    def make_checkerboard(self, n_points, noise_level=1.0, n_xy_tiles=8):
+    def make_checkerboard(self, n_points, noise_level=1.0, n_xy_tiles=6):
         x = np.random.uniform(-(n_xy_tiles // 2) * np.pi, (n_xy_tiles // 2) * np.pi, size=(n_points, 2))
         mask = 1*(np.logical_or(np.logical_and(np.sin(x[:, 0]) > 0.0, np.sin(x[:, 1]) > 0.0),
                                 np.logical_and(np.sin(x[:, 0]) < 0.0, np.sin(x[:, 1]) < 0.0)))
@@ -102,12 +95,34 @@ class DataLoader(object):
         y = np.eye(2)[1*(y == 0)]
         return x, y
 
-    def make_oscillation(self, n_points, norm=True, noise=True, noise_level=0.0):
-        x = np.array([np.linspace(-1.0, 1.0, n_points)]).T
-        y = np.array(x*np.sin(4.0*(2.0*np.pi)*x) + x)
+    def make_oscillation(self, n_points, noise=True, noise_level=0.0, ratio=0.95):
+        f = lambda x: np.sin(4.0 * x)
+        x1 = np.linspace(-5.0, -1.0, int(ratio*n_points)).reshape(-1, 1)
+        x2 = np.linspace(1.0, 5.0, int((1.0 - ratio)*n_points)).reshape(-1, 1)
+        x = np.concatenate((x1, x2))
+        y = f(x)
         if noise:
-            y += noise_level*np.random.normal(0, 1, size=y.shape)
-        if norm:
-            x = self.norm_data_1d(x)
-            y = self.norm_data_1d(y)
+            noise = noise_level * np.random.normal(0, 1, size=y.shape)
+            noise = np.linspace(start=0.0, stop=1.0, num=len(y)).reshape(-1, 1) * noise
+            y += noise
+        x = self.norm_data_1d(x)
+        y = self.norm_data_1d(y)
         return x, y
+
+    # def make_oscillation(self, n_points, noise=True, noise_level=0.0, ratio=0.95):
+    #     dx = 2.0 / float(n_points * (n_points + 1.0))
+    #     n = 0.0
+    #     x = np.zeros(shape=(n_points, 1))
+    #     for i in range(n_points):
+    #         x[i] = n * dx
+    #         n += i
+    #     x = 3.0 * 3.1415 * (2.0 * x - 1.0)
+    #     f = lambda x: np.sin(3.0 * x)
+    #     y = f(x)
+    #     if noise:
+    #         noise = noise_level * np.random.normal(0, 1, size=y.shape)
+    #         noise = np.linspace(start=0.0, stop=1.0, num=len(y)).reshape(-1, 1) * noise
+    #         y += noise
+    #     x = self.norm_data_1d(x)
+    #     y = self.norm_data_1d(y)
+    #     return x, y

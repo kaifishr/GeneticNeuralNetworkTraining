@@ -1,404 +1,244 @@
-import os
 import numpy as np
 import matplotlib.pyplot as plt
-
-from matplotlib.colors import ListedColormap
-from matplotlib import cm
-from scipy.special import expit
-from scipy.interpolate import griddata
+from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
 from util.data import DataLoader
 
-np.random.seed(42)
+np.random.seed(19937)
+
 
 class NeuralNetwork(object):
 
-    def __init__(self, problem_type, n_epochs, problem, n_points, noise_level, network_layers, n_outputs, n_agents,
-                 mutation_rate, mutation_prob, mutation_type, crossover_type, batch_size, activation_fct, save_path):
+    def __init__(self, config):
 
-        self.problem_type = problem_type
-        self.n_epochs = n_epochs
-        self.network_layers = network_layers
-        self.n_layers = len(self.network_layers)
-        self.n_agents = n_agents
-        self.batch_size = batch_size
-        self.activation_fct = activation_fct
+        self.task = config["task"]
+        self.problem = config["problem"]
+        self.n_points = config["n_points"]
+        self.noise_level = config["noise_level"]
+        self.n_dims_input = config["n_dims_input"]
+        self.n_dims_hidden = config["n_dims_hidden"]
+        self.n_dims_output = config["n_dims_output"]
+        self.n_dims_sampling_dist = config["n_dims_sampling_dist"]
+        self.n_hidden = config["n_hidden"]
+        self.n_epochs = config["n_epochs"]
+        self.n_agents = config["n_agents"]
+        self.batch_size = config["batch_size"]
+        self.mutation_rate = config["mutation_rate"]
+        self.mutation_prob = config["mutation_prob"]
+        self.plots_every_n_epochs = config["plots_every_n_epochs"]
+        self.stats_every_n_epochs = config["stats_every_n_epochs"]
 
-        # Training parameter
-        self.mutation_rate = mutation_rate
-        self.mutation_prob = mutation_prob
-        self.crossover_type = crossover_type
-        self.mutation_type = mutation_type
+        network_layers = [self.n_dims_input] + [self.n_dims_hidden for _ in range(self.n_hidden)] + [self.n_dims_output]
+
+        self.n_layers = len(network_layers)
 
         # Generate data
-        data_loader = DataLoader(problem=problem, n_outputs=n_outputs)
-        self.x_train, self.y_train, self.x_test, self.y_test = \
-            data_loader.get_data(n_points=n_points, noise_level=noise_level)
-        self.x_train_plt, self.y_train_plt, self.x_test_plt, self.y_test_plt = \
-            data_loader.get_data(n_points=2000, noise_level=noise_level)
+        data_loader = DataLoader(problem=self.problem)
+        self.x_train, self.y_train = data_loader.get_data(n_points=self.n_points, noise_level=self.noise_level)
+        self.x_test, self.y_test = data_loader.get_data(n_points=400, noise_level=self.noise_level)
 
         # Initialize weights
-        self.W = [[self.kaiming(l, self.network_layers) for l in range(self.n_layers-1)] for p in range(self.n_agents)]
-        self.B = [[np.zeros((network_layers[l+1])) for l in range(self.n_layers-1)] for p in range(self.n_agents)]
-
-        # Activation function
-        self.act_function = self.activation_function()
-
-        # Mutation counter
-        self.n = self.n_layers - 2
+        self.W = self._init_weights(network_layers)
+        self.B = self._init_biases(network_layers)
 
         # Other parameters
-        self.best_agent = 0
-        self.cost = None
+        self.idx_best = 0
 
-        self.save_path = save_path
-        if not os.path.exists(self.save_path):
-            os.makedirs(self.save_path)
+    def _init_weights(self, network_layers):
+        return [[np.random.normal(size=(network_layers[l+1], network_layers[l], self.n_dims_sampling_dist)) * np.sqrt(2.0 / network_layers[l])
+                 for l in range(self.n_layers-1)] for _ in range(self.n_agents)]
 
-        self.print_info()
-
-        if self.problem_type == 'classification':
-            self.plot_dataset()
-
-    def print_info(self):
-        fp = open(self.save_path + 'params.log', 'w')
-        prototype = 'problem_type={}\nn_epochs={}\nnetwork_layers={}\nn_agents={}\nbatch_size={}\nactivation_fct={} \
-                     \nmutation_rate={}\nmutation_prob={}\nmutation_type={}\ncrossover_type={}'
-        fp.write(prototype.format(self.problem_type,
-                                  self.n_epochs,
-                                  self.network_layers,
-                                  self.n_agents,
-                                  self.batch_size,
-                                  self.activation_fct,
-                                  self.mutation_rate,
-                                  self.mutation_prob,
-                                  self.mutation_type,
-                                  self.crossover_type))
-        fp.close()
-        print(prototype.format(self.problem_type,
-                               self.n_epochs,
-                               self.network_layers,
-                               self.n_agents,
-                               self.batch_size,
-                               self.activation_fct,
-                               self.mutation_rate,
-                               self.mutation_prob,
-                               self.mutation_type,
-                               self.crossover_type))
-
-    def discretize(self, x, eta=10.0):
-        return np.round(eta * x) / eta
-
-    def dsin(self, x):
-        return self.discretize(np.sin(x))
-
-    def dtanh(self, x):
-        return self.discretize(np.tanh(x))
-
-    def drelu(self, x):
-        return self.discretize(self.relu(x))
+    def _init_biases(self, network_layers):
+        return [[np.zeros((network_layers[l + 1], self.n_dims_sampling_dist))
+                 for l in range(self.n_layers - 1)] for _ in range(self.n_agents)]
 
     @staticmethod
-    def relu(x):
-        return x * (x > 0.0)
+    def _relu_mean(x_mean):
+        return x_mean * (x_mean > 0.0)
 
     @staticmethod
-    def heaviside(x):
-        return 1.0 * (x > 0.0)
+    def _relu_var(x_mean, x_var):
+        return x_var * (x_mean > 0.0)
 
     @staticmethod
-    def sign(x):
-        return np.where(x > 0.0, 1.0, -1.0)
+    def _tanh_mean(x_mean):
+        return np.tanh(x_mean)
 
     @staticmethod
-    def floor(x, d=1.0):
-        # Goes to x for d -> inf
-        x = np.floor(d * x) / d
-        return x
+    def _tanh_var(x_mean, x_var):
+        return x_var * (1.0 - np.tanh(x_mean)**2)**2
 
     @staticmethod
-    def sawtooth(x, d=1.0):
-        return d*x - np.floor(d*x)
-
-    def activation_function(self):
-        if self.activation_fct == 'relu':
-            return self.relu
-        elif self.activation_fct == 'heaviside':
-            return self.heaviside
-        elif self.activation_fct == 'sign':
-            return self.sign
-        elif self.activation_fct == 'floor':
-            return self.floor
-        elif self.activation_fct == 'sin':
-            return np.sin
-        elif self.activation_fct == 'tanh':
-            return np.tanh
-        elif self.activation_fct == 'sigmoid':
-            return expit
-        elif self.activation_fct == 'sawtooth':
-            return self.sawtooth
-        elif self.activation_fct == 'dtanh':
-            return self.dtanh
-        elif self.activation_fct == 'dsin':
-            return self.dsin
-        elif self.activation_fct == 'drelu':
-            return self.drelu
-        else:
-            raise Exception('Activation function not implemented.')
+    def _linear_mean(x_mean, w_mean, b_mean):
+        return np.dot(x_mean, w_mean.T) + b_mean
 
     @staticmethod
-    def kaiming(l, network_layers):
-        return np.random.normal(size=(network_layers[l], network_layers[l+1])) * np.sqrt(2.0 / network_layers[l])
+    def _linear_var(x_mean, x_var, w_mean, w_var, b_var):
+        term_1 = np.dot(x_var, w_var.T)
+        term_2 = np.dot(x_var, np.square(w_mean).T)
+        term_3 = np.dot(np.square(x_mean), w_var.T)
+        term_4 = b_var
+        return term_1 + term_2 + term_3 + term_4
 
-    def grouped_rand_idx(self):
+    def _grouped_rand_idx(self):
         idx = np.random.permutation(len(self.x_train))
         return [idx[i:i + self.batch_size] for i in range(0, len(idx), self.batch_size)]
 
-    def prediction(self, p, x_data):
-        x = np.copy(x_data)
-        for l in range(self.n_layers - 2):
-            x = np.dot(x, self.W[p][l]) + self.B[p][l]
-            x = self.act_function(x)
-        y_pred = np.dot(x, self.W[p][-1]) + self.B[p][-1]
+    def forward(self, p, x):
+        for w, b in zip(self.W[p][:-1], self.B[p][:-1]):
+            w = w.mean(axis=-1)
+            b = b.mean(axis=-1)
+            x = np.dot(x, w.T) + b
+            x = self._relu_mean(x)
+        w = self.W[p][-1].mean(axis=-1)
+        b = self.B[p][-1].mean(axis=-1)
+        y_pred = self._tanh_mean(np.dot(x, w.T) + b)
         return y_pred
 
-    def compute_cost(self, y_batch, y_pred):
-        return np.sum((y_batch - y_pred) ** 2) / self.batch_size
+    @staticmethod
+    def _comp_mean_var(param):
+        return param.mean(axis=-1), param.var(axis=-1)
 
-    def feedforward(self, idx):
-        cost = []
-        x_batch, y_batch = self.x_train[idx], self.y_train[idx]
-        for p in range(self.n_agents):
-            y_pred = self.prediction(p, x_batch)
-            cost.append(self.compute_cost(y_batch, y_pred))
-        self.cost = cost
-        self.best_agent = np.argmin(self.cost)
+    def forward_mean_var(self, p, x):
+        x_mean = x
+        x_var = np.zeros_like(x)
 
-    def comp_accuracy(self):
-        y_pred = self.prediction(self.best_agent, self.x_test)
-        accuracy = np.sum(np.argmax(y_pred, axis=1) == np.argmax(self.y_test, axis=1)) / len(y_pred)
-        return accuracy
+        for w, b in zip(self.W[p][:-1], self.B[p][:-1]):
+            # Compute mean and variance of sampling distributions
+            w_mean, w_var = self._comp_mean_var(w)
+            b_mean, b_var = self._comp_mean_var(b)
+            # Variance and mean propagation linear
+            x_var = self._linear_var(x_mean, x_var, w_mean, w_var, b_var)
+            x_mean = self._linear_mean(x_mean, w_mean, b_mean)
+            # Variance and mean propagation activation function
+            x_var = self._relu_var(x_mean, x_var)
+            x_mean = self._relu_mean(x_mean)
 
-    def logger(self, epoch, fp):
-        if self.problem_type == 'regression':
-            fp.write('{} {} {} {}\n'.format(epoch, self.cost[self.best_agent], self.mutation_rate, self.mutation_prob))
-            print('{} {} {} {}'.format(epoch, self.cost[self.best_agent], self.mutation_rate, self.mutation_prob), flush=True)
-        elif self.problem_type == 'classification':
-            accuracy = self.comp_accuracy()
-            fp.write('{} {} {} {} {}\n'.format(epoch, self.cost[self.best_agent], accuracy, self.mutation_rate, self.mutation_prob))
-            print('{} {} {} {} {}'.format(epoch, self.cost[self.best_agent], accuracy, self.mutation_rate, self.mutation_prob), flush=True)
-        else:
-            raise Exception('Problem type not implemented')
-        fp.flush()
+        # Compute mean and variance of sampling distributions
+        w_mean, w_var = self._comp_mean_var(self.W[p][-1])
+        b_mean, b_var = self._comp_mean_var(self.B[p][-1])
+        # Variance and mean propagation linear
+        x_var = self._linear_var(x_mean, x_var, w_mean, w_var, b_var)
+        x_mean = self._linear_mean(x_mean, w_mean, b_mean)
+        # Variance and mean propagation activation function
+        # x_var = self._tanh_var(x_mean, x_var)
+        x_mean = self._tanh_mean(x_mean)
 
-    def visualizer(self, epoch):
-        if self.problem_type == 'regression':
-            self.plot_progress_regression(epoch)
-        elif self.problem_type == 'classification':
-            self.plot_progress_classification(epoch, vis_type='prediction')
-            self.plot_progress_classification(epoch, vis_type='classification')
-        else:
-            raise Exception('Problem type not implemented')
+        return x_mean, x_var # / x_var.max()
 
-    def run(self):
-        # Open log file
-        fp = open(self.save_path + 'data.log', 'w')
+    def _comp_stats(self, x_data, y_data):
+        y_pred = self.forward(self.idx_best, x_data)
+        loss = self._comp_loss(y_data, y_pred)
+        accuracy = self._comp_accuracy(y_data, y_pred)
+        return loss, accuracy
 
-        # Initial prediction
-        idx = list(range(len(self.x_train)))
-        self.feedforward(idx)
+    @staticmethod
+    def _comp_loss(y_data, y_pred):
+        """Computes average loss per instance.
+        """
+        return np.sum((y_data - y_pred) ** 2) / len(y_data)
 
-        # Initial logging
-        epoch = 0
-        self.logger(epoch, fp)
-        self.visualizer(epoch)
+    @staticmethod
+    def _comp_accuracy(y_data, y_pred):
+        """Computes accuracy for classification task.
+        """
+        return np.sum(np.argmax(y_pred, axis=1) == np.argmax(y_data, axis=1)) / len(y_data)
 
-        cost_old = self.cost[self.best_agent]
+    def _plot2d(self, grid_resolution=200):
+        fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12, 6))
 
-        for epoch in range(1, self.n_epochs+1):
+        # Plot ground truth
+        x_min = self.x_train.min(axis=0, keepdims=True)
+        x_max = self.x_train.max(axis=0, keepdims=True)
+        x_train = grid_resolution * (self.x_train - x_min) / (x_max - x_min)
+        axes[0].scatter(x_train[:, 0], x_train[:, 1], c=self.y_train[:, 0], s=1.0, cmap="bwr")
+        axes[1].scatter(x_train[:, 0], x_train[:, 1], c=self.y_train[:, 0], s=1.0, cmap="bwr")
 
-            # Optimization step
-            idx_list = self.grouped_rand_idx()
-            for idx in idx_list:
-                self.feedforward(idx)
-                self.crossover()
-                self.mutation()
-
-            # Print progress to file every epoch
-            if epoch % 50 == 0:
-                self.logger(epoch, fp)
-
-            # Visualize progress
-            if epoch % 1000 == 0:
-                self.visualizer(epoch)
-
-        # Close log file
-        fp.close()
-
-    def mutation(self):
-
-        if self.mutation_type == 'default':
-            self.W = [[self.W[p][l] + np.random.uniform(-self.mutation_rate, self.mutation_rate, size=self.W[p][l].shape) * \
-                       (np.random.random(self.W[p][l].shape) < self.mutation_prob) for l in range(self.n_layers - 1)]
-                      for p in range(self.n_agents)]
-            self.B = [[self.B[p][l] + np.random.uniform(-self.mutation_rate, self.mutation_rate, size=self.B[p][l].shape) * \
-                       (np.random.random(self.B[p][l].shape) < self.mutation_prob) for l in range(self.n_layers - 1)]
-                      for p in range(self.n_agents)]
-
-        elif self.mutation_type == 'default_v2':
-            # Efficient mutation operation for large networks
-            for l in range(self.n_layers - 1):
-                rows, cols = self.W[0][l].shape
-                sample_size = int(self.mutation_prob * self.W[0][l].size)
-                if sample_size == 0:
-                    sample_size = np.random.binomial(1, self.mutation_prob)
-                for p in range(self.n_agents):
-                    self.W[p][l][np.random.randint(rows, size=sample_size), np.random.randint(cols, size=sample_size)] += \
-                        np.random.uniform(-self.mutation_rate, self.mutation_rate, size=sample_size)
-                    self.B[p][l][np.random.randint(cols, size=sample_size)] += np.random.uniform(-self.mutation_rate, self.mutation_rate,
-                                                                                                 size=sample_size)
-
-        elif self.mutation_type == 'random_cycle':
-            # Change weights of a random layer
-            for p in range(self.n_agents):
-                l = np.random.randint(self.n_layers - 1)
-                self.W[p][l] = self.W[p][l] + np.random.uniform(-self.mutation_rate, self.mutation_rate, size=self.W[p][l].shape) * \
-                               (np.random.random(self.W[p][l].shape) < self.mutation_prob)
-                self.B[p][l] = self.B[p][l] + np.random.uniform(-self.mutation_rate, self.mutation_rate, size=self.B[p][l].shape) * \
-                               (np.random.random(self.B[p][l].shape) < self.mutation_prob)
-
-        elif self.mutation_type == 'forward_cycle':
-            # Changes weights from first to last layer
-            l = self.n
-            for p in range(self.n_agents):
-                self.W[p][l] = self.W[p][l] + np.random.uniform(-self.mutation_rate, self.mutation_rate, size=self.W[p][l].shape) * \
-                               (np.random.random(self.W[p][l].shape) < self.mutation_prob)
-                self.B[p][l] = self.B[p][l] + np.random.uniform(-self.mutation_rate, self.mutation_rate, size=self.B[p][l].shape) * \
-                               (np.random.random(self.B[p][l].shape) < self.mutation_prob)
-            l += 1  # forward
-            self.n = l % (self.n_layers - 1)
-        else:
-            raise Exception('Mutation operation not implemented')
-
-    def crossover(self):
-        # Get best two agents
-        idx_0, idx_1, *_ = np.argsort(self.cost)
-
-        if self.crossover_type == 'none':
-            # No crossover operation
-            self.W = [np.copy(self.W[idx_0]) for p in range(self.n_agents)]
-            self.B = [np.copy(self.B[idx_0]) for p in range(self.n_agents)]
-
-        elif self.crossover_type == 'uniform':
-            # Buffer weights of top two networks
-            W_0_tmp, B_0_tmp = np.copy(self.W[idx_0]), np.copy(self.B[idx_0])
-            W_1_tmp, B_1_tmp = np.copy(self.W[idx_1]), np.copy(self.B[idx_1])
-            # Compute binary masks for crossover operation
-            W_mask = [[np.random.randint(2, size=self.W[p][l].shape) for l in range(self.n_layers - 1)] for p in
-                      range(self.n_agents)]
-            B_mask = [[np.random.randint(2, size=self.B[p][l].shape) for l in range(self.n_layers - 1)] for p in
-                      range(self.n_agents)]
-            # Different uniform crossover for every offspring
-            self.W = [[W_mask[p][l] * (W_0_tmp[l] - W_1_tmp[l]) + W_1_tmp[l] for l in range(self.n_layers - 1)] for p in
-                      range(self.n_agents)]
-            self.B = [[B_mask[p][l] * (B_0_tmp[l] - B_1_tmp[l]) + B_1_tmp[l] for l in range(self.n_layers - 1)] for p in
-                      range(self.n_agents)]
-
-        elif self.crossover_type == 'mean':
-            # Buffer weights of top two networks
-            W_0_tmp, B_0_tmp = np.copy(self.W[idx_0]), np.copy(self.B[idx_0])
-            W_1_tmp, B_1_tmp = np.copy(self.W[idx_1]), np.copy(self.B[idx_1])
-            # Pooled weights crossover
-            self.W = [[0.5 * (W_0_tmp[l] + W_1_tmp[l]) for l in range(self.n_layers - 1)] for p in range(self.n_agents)]
-            self.B = [[0.5 * (B_0_tmp[l] + B_1_tmp[l]) for l in range(self.n_layers - 1)] for p in range(self.n_agents)]
-
-        elif self.crossover_type == 'neuron_wise':
-            # Buffer weights of top two networks
-            W_0_tmp, B_0_tmp = np.copy(self.W[idx_0]), np.copy(self.B[idx_0])
-            W_1_tmp, B_1_tmp = np.copy(self.W[idx_1]), np.copy(self.B[idx_1])
-            # Neuron-wise weight crossover
-            mask = [[np.random.randint(2, size=self.B[p][l].shape) for l in range(self.n_layers - 1)] for p in
-                    range(self.n_agents)]
-            self.W = [[mask[p][l] * (W_0_tmp[l] - W_1_tmp[l]) + W_1_tmp[l] for l in range(self.n_layers - 1)] for p in
-                      range(self.n_agents)]
-            self.B = [[mask[p][l] * (B_0_tmp[l] - B_1_tmp[l]) + B_1_tmp[l] for l in range(self.n_layers - 1)] for p in
-                      range(self.n_agents)]
-
-        elif self.crossover_type == 'layer_wise':
-            # Buffer weights of top two networks
-            W_0_tmp, B_0_tmp = np.copy(self.W[idx_0]), np.copy(self.B[idx_0])
-            W_1_tmp, B_1_tmp = np.copy(self.W[idx_1]), np.copy(self.B[idx_1])
-            # Neuron-wise weight crossover
-            self.W = [[W_0_tmp[l] if np.random.rand() < 0.5 else W_1_tmp[l] for l in range(self.n_layers - 1)] for p in
-                      range(self.n_agents)]
-            self.B = [[B_0_tmp[l] if np.random.rand() < 0.5 else B_1_tmp[l] for l in range(self.n_layers - 1)] for p in
-                      range(self.n_agents)]
-
-        else:
-            raise Exception('Crossover operation not implemented')
-
-    def plot_progress_regression(self, epoch):
-        marker_size = 1.0
-        plt.plot(self.x_train_plt, self.y_train_plt, "bo", ms=marker_size, alpha=0.2)
-        plt.plot(self.x_test_plt, self.y_test_plt, "ro", ms=marker_size, alpha=0.2)
-        y_test_pred = self.prediction(self.best_agent, self.x_test)
-        y_train_pred = self.prediction(self.best_agent, self.x_train)
-        plt.plot(self.x_train, y_train_pred, "k-", alpha=0.7)
-        plt.plot(self.x_test, y_test_pred, "k-", alpha=0.7)
-        x_min, x_max = -1.1, 1.1
-        y_min, y_max = -1.1, 1.1
-        plt.xlim(x_min, x_max)
-        plt.ylim(y_min, y_max)
-        plt.tight_layout()
-        plt.savefig(self.save_path + self.activation_fct + "_" + str(epoch) + ".png", dpi=150)
-        plt.close()
-
-    def plot_progress_classification(self, epoch, vis_type='prediction'):
-        # Create validation grid of uniform distributed points for prediction landscape
-        grid_resolution = 512
-        x_min, x_max = -1.1, 1.1
-        y_min, y_max = -1.1, 1.1
+        # Plot prediction
+        domain = 1.0
+        x_min, x_max = -domain, domain
+        y_min, y_max = -domain, domain
         xx_, yy_ = np.linspace(x_min, x_max, grid_resolution), np.linspace(y_min, y_max, grid_resolution)
         xx, yy = np.meshgrid(xx_, yy_)
         x = np.vstack([xx.reshape(-1), yy.reshape(-1)]).T
-        y = self.prediction(self.best_agent, x)
+        y_mean, y_var = self.forward_mean_var(self.idx_best, x)
+        axes[0].imshow(y_mean[:, 0].reshape(grid_resolution, grid_resolution), cmap="magma")
+        axes[1].imshow(y_var.mean(axis=-1).reshape(grid_resolution, grid_resolution), cmap="magma")
 
-        # custom discrete colormap (red, blue) and styles
-        cmap = ListedColormap(np.array([[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]]))
+        # fig.tight_layout(pad=0)
 
-        # --- Create prediction landscape ---
-        resolution = 512
-        xi = np.linspace(x_min, x_max, resolution)
-        yi = np.linspace(y_min, y_max, resolution)
-        if vis_type == 'classification':
-            y_pred = np.argmax(y, axis=1)
-            zi = griddata((x[:, 0], x[:, 1]), y_pred, (xi[None, :], yi[:, None]), method='nearest')
-            plt.contourf(xi, yi, zi, levels=1, alpha=0.4, cmap=cmap, vmin=0.0, vmax=1.0)
-        elif vis_type == 'prediction':
-            zi = griddata((x[:, 0], x[:, 1]), y[:, 0], (xi[None, :], yi[:, None]), method='cubic')
-            plt.contourf(xi, yi, zi, levels=256, cmap='bwr', vmin=0.0, vmax=1.0)
+        for ax in axes:
+            ax.set_axis_off()
 
-        # --- Plot data points with scatter ---
-        scatter_style = {'marker': 'o', 's': 10.0, 'alpha': 0.9, 'cmap': cmap, 'edgecolors': 'black', 'linewidths': 0.5}
-        plt.scatter(self.x_train_plt[:, 0], self.x_train_plt[:, 1], c=self.y_train_plt[:, 1], **scatter_style)
-        plt.xlim(x_min, x_max)
-        plt.ylim(y_min, y_max)
-        file_name = '{}_{}_{}.png'.format(vis_type, self.activation_fct, epoch)
-        plt.tight_layout()
-        plt.savefig(self.save_path + file_name, dpi=150)
-        plt.close()
+        return fig
 
-    def plot_dataset(self):
-        # Custom discrete colormap (red, blue) and styles
-        cmap = ListedColormap(np.array([[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]]))
-        # Parameters
-        x_min, x_max = -1.1, 1.1
-        y_min, y_max = -1.1, 1.1
+    def _plot1d(self):
+        fig, ax = plt.subplots(nrows=1, ncols=1)
 
-        # --- Plot data points with scatter ---
-        scatter_style = {'marker': 'o', 's': 10.0, 'alpha': 0.5, 'cmap': cmap, 'edgecolors': 'black', 'linewidths': 0.5}
-        plt.scatter(self.x_train_plt[:, 0], self.x_train_plt[:, 1], c=self.y_train_plt[:, 1], **scatter_style)
-        plt.xlim(x_min, x_max)
-        plt.ylim(y_min, y_max)
-        plt.tight_layout()
-        plt.savefig(self.save_path + 'problem.png', dpi=150)
-        plt.close()
+        # Plot ground truth
+        ax.plot(self.x_train, self.y_train, "r.", markersize=0.4, lw=0.5, alpha=0.75)
+
+        # Plot prediction
+        n_samples_test = 2000
+        x = np.linspace(start=-1.25, stop=1.25, num=n_samples_test).reshape(n_samples_test, 1)
+        y_mean, y_var = self.forward_mean_var(self.idx_best, x)
+
+        ax.plot(x, y_mean, "g-", lw=1.0, alpha=1.0)
+        ax.fill_between(x[:, 0], y_mean[:, 0] - y_var[:, 0], y_mean[:, 0] + y_var[:, 0], color="green", alpha=0.2)
+
+        return fig
+
+    def run(self):
+        writer = SummaryWriter()
+
+        for epoch in tqdm(range(1, self.n_epochs+1)):
+
+            for idx in self._grouped_rand_idx():
+                x_data, y_data = self.x_train[idx], self.y_train[idx]
+
+                batch_loss = list()
+
+                for p in range(self.n_agents):
+                    y_pred = self.forward(p, x_data)
+                    batch_loss.append(self._comp_loss(y_data, y_pred))
+
+                self.idx_best = np.argmin(batch_loss)
+                self._clone_agent()
+                self._mutate_agent()
+                self._clip_agent()
+
+            if epoch % self.stats_every_n_epochs == 0:
+                test_loss, test_accuracy = self._comp_stats(self.x_test, self.y_test)
+                writer.add_scalar("loss", test_loss, epoch)
+                writer.add_scalar("accuracy", test_accuracy, epoch)
+
+            if epoch % self.plots_every_n_epochs == 0:
+                # writer.add_figure("plot", self._plot1d(), epoch)
+                writer.add_figure("plot", self._plot2d(), epoch)
+
+    def _clone_agent(self):
+        """Clone best agent."""
+        self.W = self._clone(self.W)
+        self.B = self._clone(self.B)
+
+    def _clone(self, params):
+        return [[param for param in params[self.idx_best]] for _ in range(self.n_agents)]
+
+    def _mutate_agent(self):
+        """Apply mutation to agents."""
+        self.W = self._mutate(self.W)
+        self.B = self._mutate(self.B)
+
+    def _mutate(self, params):
+        return [[p + np.random.uniform(-self.mutation_rate, self.mutation_rate, size=p.shape)
+                 * (np.random.random(p.shape) < self.mutation_prob) for p in param] for param in params]
+
+    def _clip_agent(self):
+        """Clips agent's parameters."""
+        self.W = self._clip(self.W)
+        self.B = self._clip(self.B)
+
+    @staticmethod
+    def _clip(params, a_min=-10.0, a_max=10.0):
+        return [[p.clip(a_min, a_max) for p in param] for param in params]
+
