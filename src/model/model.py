@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from util.data import DataLoader
+from data.data import DataLoader
 
 np.random.seed(19937)
 
@@ -45,7 +45,8 @@ class NeuralNetwork(object):
         self.idx_best = 0
 
     def _init_weights(self, network_layers):
-        return [[np.random.normal(size=(network_layers[l+1], network_layers[l], self.n_dims_sampling_dist)) * np.sqrt(2.0 / network_layers[l])
+        return [[np.random.normal(size=(network_layers[l+1], network_layers[l], self.n_dims_sampling_dist))
+                 * np.sqrt(2.0 / network_layers[l])
                  for l in range(self.n_layers-1)] for _ in range(self.n_agents)]
 
     def _init_biases(self, network_layers):
@@ -92,8 +93,9 @@ class NeuralNetwork(object):
             x = self._relu_mean(x)
         w = self.W[p][-1].mean(axis=-1)
         b = self.B[p][-1].mean(axis=-1)
-        y_pred = self._tanh_mean(np.dot(x, w.T) + b)
-        return y_pred
+        x = np.dot(x, w.T) + b
+        # x = self._tanh_mean(x)
+        return x
 
     @staticmethod
     def _comp_mean_var(param):
@@ -122,11 +124,16 @@ class NeuralNetwork(object):
         x_mean = self._linear_mean(x_mean, w_mean, b_mean)
         # Variance and mean propagation activation function
         # x_var = self._tanh_var(x_mean, x_var)
-        x_mean = self._tanh_mean(x_mean)
+        # x_mean = self._tanh_mean(x_mean)
 
-        return x_mean, x_var # / x_var.max()
+        return x_mean, x_var
 
-    def _comp_stats(self, x_data, y_data):
+    def _comp_stats_regression(self, x_data, y_data):
+        y_pred = self.forward(self.idx_best, x_data)
+        loss = self._comp_loss(y_data, y_pred)
+        return loss
+
+    def _comp_stats_classification(self, x_data, y_data):
         y_pred = self.forward(self.idx_best, x_data)
         loss = self._comp_loss(y_data, y_pred)
         accuracy = self._comp_accuracy(y_data, y_pred)
@@ -164,8 +171,6 @@ class NeuralNetwork(object):
         y_mean, y_var = self.forward_mean_var(self.idx_best, x)
         axes[0].imshow(y_mean[:, 0].reshape(grid_resolution, grid_resolution), cmap="magma")
         axes[1].imshow(y_var.mean(axis=-1).reshape(grid_resolution, grid_resolution), cmap="magma")
-
-        # fig.tight_layout(pad=0)
 
         for ax in axes:
             ax.set_axis_off()
@@ -208,13 +213,23 @@ class NeuralNetwork(object):
                 self._clip_agent()
 
             if epoch % self.stats_every_n_epochs == 0:
-                test_loss, test_accuracy = self._comp_stats(self.x_test, self.y_test)
-                writer.add_scalar("loss", test_loss, epoch)
-                writer.add_scalar("accuracy", test_accuracy, epoch)
+                if self.task == "regression":
+                    test_loss = self._comp_stats_regression(self.x_test, self.y_test)
+                    writer.add_scalar("loss", test_loss, epoch)
+                elif self.task == "classification":
+                    test_loss, test_accuracy = self._comp_stats_classification(self.x_test, self.y_test)
+                    writer.add_scalar("loss", test_loss, epoch)
+                    writer.add_scalar("accuracy", test_accuracy, epoch)
+                else:
+                    raise Exception(f"Task \"{self.task}\" not recognized.")
 
             if epoch % self.plots_every_n_epochs == 0:
-                # writer.add_figure("plot", self._plot1d(), epoch)
-                writer.add_figure("plot", self._plot2d(), epoch)
+                if self.task == "regression":
+                    writer.add_figure("plot", self._plot1d(), epoch)
+                elif self.task == "classification":
+                    writer.add_figure("plot", self._plot2d(), epoch)
+                else:
+                    raise Exception(f"Task \"{self.task}\" not recognized.")
 
     def _clone_agent(self):
         """Clone best agent."""

@@ -1,14 +1,31 @@
-from models.model import NeuralNetwork
+from model.model import NeuralNetwork
 
 
-def main():
+def regression_config():
     config = dict()
 
-    # Task
-    config["task"] = "classification"  # classification, regression
+    # Data
+    config["task"] = "regression"
+    config["problem"] = "oscillation"
+    config["n_points"] = 4000
+    config["noise_level"] = 0.05
+
+    # Network
+    config["n_dims_input"] = 1
+    config["n_dims_hidden"] = 8
+    config["n_dims_output"] = 1
+    config["n_dims_sampling_dist"] = 128
+    config["n_hidden"] = 2
+
+    return config
+
+
+def classification_config():
+    config = dict()
 
     # Data
-    config["problem"] = "moons"  # Regression: oscillation, Classification: moons, circles, checkerboard, rectangles, spirals
+    config["task"] = "classification"
+    config["problem"] = "moons"  # moons, circles, checkerboard, rectangles, spirals
     config["n_points"] = 4000
     config["noise_level"] = 0.05
 
@@ -19,6 +36,13 @@ def main():
     config["n_dims_sampling_dist"] = 128
     config["n_hidden"] = 2
 
+    return config
+
+
+def main():
+    config = regression_config()
+    # config = classification_config()
+
     # Training
     config["n_epochs"] = 99999999
     config["batch_size"] = 256
@@ -27,8 +51,8 @@ def main():
     config["mutation_prob"] = 1.0e-01
 
     # Stats
-    config["stats_every_n_epochs"] = 200
-    config["plots_every_n_epochs"] = 5000
+    config["stats_every_n_epochs"] = 50
+    config["plots_every_n_epochs"] = 1000
 
     network = NeuralNetwork(config)
     network.run()

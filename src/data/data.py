@@ -108,21 +108,3 @@ class DataLoader(object):
         x = self.norm_data_1d(x)
         y = self.norm_data_1d(y)
         return x, y
-
-    # def make_oscillation(self, n_points, noise=True, noise_level=0.0, ratio=0.95):
-    #     dx = 2.0 / float(n_points * (n_points + 1.0))
-    #     n = 0.0
-    #     x = np.zeros(shape=(n_points, 1))
-    #     for i in range(n_points):
-    #         x[i] = n * dx
-    #         n += i
-    #     x = 3.0 * 3.1415 * (2.0 * x - 1.0)
-    #     f = lambda x: np.sin(3.0 * x)
-    #     y = f(x)
-    #     if noise:
-    #         noise = noise_level * np.random.normal(0, 1, size=y.shape)
-    #         noise = np.linspace(start=0.0, stop=1.0, num=len(y)).reshape(-1, 1) * noise
-    #         y += noise
-    #     x = self.norm_data_1d(x)
-    #     y = self.norm_data_1d(y)
-    #     return x, y
