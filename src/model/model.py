@@ -94,7 +94,7 @@ class NeuralNetwork(object):
         w = self.W[p][-1].mean(axis=-1)
         b = self.B[p][-1].mean(axis=-1)
         x = np.dot(x, w.T) + b
-        # x = self._tanh_mean(x)
+        x = self._tanh_mean(x)
         return x
 
     @staticmethod
@@ -123,8 +123,8 @@ class NeuralNetwork(object):
         x_var = self._linear_var(x_mean, x_var, w_mean, w_var, b_var)
         x_mean = self._linear_mean(x_mean, w_mean, b_mean)
         # Variance and mean propagation activation function
-        # x_var = self._tanh_var(x_mean, x_var)
-        # x_mean = self._tanh_mean(x_mean)
+        x_var = self._tanh_var(x_mean, x_var)
+        x_mean = self._tanh_mean(x_mean)
 
         return x_mean, x_var
 
